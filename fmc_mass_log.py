@@ -101,6 +101,8 @@ for rule in rules:
         ruleContent.pop('metadata')
     oldContent = ruleContent.copy()
     ruleContent.update(desiredLog)
+    if ruleContent['action'] == 'ALLOW':
+        ruleContent['action'] = 'TRUST'
     if ruleContent['action'] not in ['ALLOW', 'TRUST'] and ruleContent.get('logEnd'):  # Only ALLOW/TRUST supports LogEnd
         ruleContent.pop('logEnd')
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
