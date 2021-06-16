@@ -15,6 +15,7 @@ from pprint import pprint
 from time import time
 from VRF_Subnet_Parser import parse_csv
 from DestZone_Finder import zone_find
+from DenyIPAnyAny import isdenyipanyany
 
 desiredState = {
     'logBegin': True,
@@ -28,6 +29,7 @@ Headers = {'Content-Type': 'application/json'}
 domainUUID = {}
 findDestZones = False
 changeAllowToTrust = True
+deleteDenyIPAnyAny = True
 
 
 def usage():
@@ -107,8 +109,8 @@ rule_counter = 0
 for rule in rules:
     rule_counter += 1
     ruleLink = rule['links']['self']
-    result = requests.get(ruleLink, headers=Headers, verify=False)
     try:
+        result = requests.get(ruleLink, headers=Headers, verify=False)
         result.raise_for_status()
     except:
         if result.status_code == 401:
@@ -120,13 +122,38 @@ for rule in rules:
             pprint(result.content)
             exit(1)
     ruleContent = result.json()
+
     if ruleContent.get('metadata'):
         ruleContent.pop('metadata')
+
+    if deleteDenyIPAnyAny and isdenyipanyany(ruleContent):
+        print(f'Rule #{rule_counter} is "deny ip any any", deleting it')
+        try:
+            result = requests.delete(ruleLink, headers=Headers, verify=False)
+            result.raise_for_status()
+        except:
+            if result.status_code == 401:
+                print("Token expired, getting a new one")
+                Headers['X-auth-access-token'], domainUUID = generatetoken()
+                result = requests.delete(ruleLink, headers=Headers, verify=False)
+            else:
+                pprint(result.json())
+                exit(1)
+        continue
+
     oldContent = ruleContent.copy()
     ruleContent.update(desiredState)
-    if changeAllowToTrust:
+
+    if changeAllowToTrust:  # Must remove IPS, File Policy and Variable set from TRUST rules
         if ruleContent['action'] == 'ALLOW':
             ruleContent['action'] = 'TRUST'
+            if ruleContent.get('ipsPolicy'):
+                ruleContent.pop('ipsPolicy')
+            if ruleContent.get('variableSet'):
+                ruleContent.pop('variableSet')
+            if ruleContent.get('filePolicy'):
+                ruleContent.pop('filePolicy')
+
     if ruleContent['action'] not in ['ALLOW', 'TRUST'] and ruleContent.get('logEnd'):  # Only ALLOW/TRUST supports LogEnd
         ruleContent['logEnd'] = False
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
@@ -134,8 +161,8 @@ for rule in rules:
     if ruleContent == oldContent:
         print(f'Rule #{rule_counter} ok, no changes needed')
         continue
-    result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
     try:
+        result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         result.raise_for_status()
     except:
         if result.status_code == 401:
