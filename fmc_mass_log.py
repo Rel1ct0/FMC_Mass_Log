@@ -1,3 +1,11 @@
+"""
+Script to find all rules in the Access Control Policy and change them
+See desiredState variable below
+You can also specify CSV-file with SecurityZone;Subnet columns, script will try
+to find and specify destination zones in the rule
+Script will also delete 'deny ip any any' rules by default
+"""
+
 import requests
 import sys
 from getpass import getpass
@@ -5,20 +13,25 @@ import warnings
 import json
 from pprint import pprint
 from time import time
+from VRF_Subnet_Parser import parse_csv
+from DestZone_Finder import zone_find
 
-desiredLog = {
+desiredState = {
     'logBegin': True,
     'logEnd': True,
     'sendEventsToFMC': False,
     'enableSyslog': True
 }
 
+# various variables
 Headers = {'Content-Type': 'application/json'}
 domainUUID = {}
+findDestZones = False
+changeAllowToTrust = True
 
 
 def usage():
-    print("Usage: fmc_mass_log <FMC_address> <Policy_Name>")
+    print("Usage: fmc_mass_log <FMC_address> <Policy_Name> [<VRF-Subnet.csv]")
     exit(0)
 
 
@@ -37,12 +50,16 @@ def generatetoken():
     return token, domain
 
 
-if len(sys.argv) != 3:
+if len(sys.argv) < 3:
     usage()
 
 warnings.filterwarnings("ignore")
 FMC = sys.argv[1]
 Policy = sys.argv[2]
+
+if len(sys.argv) == 4:
+    VRF_Subnets = parse_csv(sys.argv[3])
+    findDestZones = True
 
 adminuser = input("Please enter admin username: ")
 print("Please enter admin password: ", sep='')
@@ -50,8 +67,11 @@ adminpass = getpass(prompt='')
 
 startTime = time()
 
+# Get access token for FMC
 Headers['X-auth-access-token'], domainUUID = generatetoken()
 
+
+# Find policy to work with
 print(f"Looking for policy {Policy}...")
 result = requests.get(f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/policy/accesspolicies',
                       headers=Headers,
@@ -66,6 +86,8 @@ if not policyID:
     exit(0)
 print(f"Policy with name {Policy} found, id is {policyID}")
 
+
+# Get all rules from the policy
 result = requests.get(
     f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/policy/accesspolicies/{policyID}/accessrules?offset=0&limit=1000',
     headers=Headers,
@@ -77,9 +99,10 @@ while result.json()['paging'].get('next'):
         headers=Headers,
         verify=False)
     rules.extend(result.json()['items'])
-
 print(f'Found {len(rules)} rules')
 
+
+# Main loop
 rule_counter = 0
 for rule in rules:
     rule_counter += 1
@@ -100,13 +123,14 @@ for rule in rules:
     if ruleContent.get('metadata'):
         ruleContent.pop('metadata')
     oldContent = ruleContent.copy()
-    ruleContent.update(desiredLog)
-    if ruleContent['action'] == 'ALLOW':
-        ruleContent['action'] = 'TRUST'
+    ruleContent.update(desiredState)
+    if changeAllowToTrust:
+        if ruleContent['action'] == 'ALLOW':
+            ruleContent['action'] = 'TRUST'
     if ruleContent['action'] not in ['ALLOW', 'TRUST'] and ruleContent.get('logEnd'):  # Only ALLOW/TRUST supports LogEnd
-        ruleContent.pop('logEnd')
+        ruleContent['logEnd'] = False
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
-        ruleContent.pop('logBegin')
+        ruleContent['logBegin'] = False
     if ruleContent == oldContent:
         print(f'Rule #{rule_counter} ok, no changes needed')
         continue
