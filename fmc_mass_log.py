@@ -13,9 +13,8 @@ import warnings
 import json
 from pprint import pprint
 from time import time
-from VRF_Subnet_Parser import parse_csv
-from DenyIPAnyAny import isdenyipanyany
 from ipaddress import ip_network
+from csv import reader
 
 
 desiredState = {
@@ -112,18 +111,58 @@ def zone_find(rule_json, zone_dict):
         for zone in zone_dict.keys():
             if zone_dict[zone].get('networks'):
                 for zone_net in zone_dict[zone]['networks']:
-                    if net.subnet_of(zone_net):
-                        vrfs_found += 1
-                        vrfs_set.add(zone)
+                    try:
+                        if net.subnet_of(zone_net):
+                            vrfs_found += 1
+                            vrfs_set.add(zone)
+                    except:
+                        pass
     if vrfs_found >= len(dest_networks):
         result = list(vrfs_set)
         result.sort()
         return result
     return None
 
+
+def isdenyipanyany(rule: dict)->bool:
+    try:
+        if rule['action'] == 'BLOCK' and  \
+                (not rule.get('sourceNetworks') or rule['sourceNetworks']['objects'][0]['name'] == 'any') and \
+                (not rule.get('destinationNetworks') or rule['destinationNetworks']['objects'][0]['name'] == 'any') and \
+                not rule.get('sourcePorts') and \
+                not rule.get('urls') and \
+                not rule.get('destinationPorts') and \
+                not rule.get('applications'):
+            return True
+    except:
+        pass
+    return False
+
+
+def parse_csv(file):
+    with open(file, encoding="utf-8-sig") as inputfile:
+        print(f'Parsing inputfile {file}')
+        vrf_subnets = dict()
+        content = reader(inputfile, delimiter=';')
+        for nextline in content:
+            vrf, subnet = nextline
+            if subnet.find('/') == -1:
+                subnet = subnet + '/24'
+            if not vrf_subnets.get(vrf):  # New VRF
+                vrf_subnets[vrf] = list()
+            try:
+                vrf_subnets[vrf].append(ip_network(subnet.strip()))
+            except Exception as e:
+                print(f'Error parsing {file}, got {e}')
+                print(f'{subnet} is not a valid subnet')
+        print(f'Found {len(vrf_subnets)} security zones')
+    return vrf_subnets
+
+
 #######################################################################################################
 # Main program starts here
 #######################################################################################################
+
 
 if len(sys.argv) < 3:
     usage()
@@ -202,7 +241,7 @@ for rule in rules:
     rule_counter += 1
     ruleLink = rule['links']['self']
 
-    try:
+    try:  # Get rule content
         result = requests.get(ruleLink, headers=Headers, verify=False)
         result.raise_for_status()
     except:
@@ -216,10 +255,10 @@ for rule in rules:
             exit(1)
     ruleContent = result.json()
 
-    if ruleContent.get('metadata'):
+    if ruleContent.get('metadata'):  # Remove metadata or PUT will fail
         ruleContent.pop('metadata')
 
-    if deleteDenyIPAnyAny and isdenyipanyany(ruleContent):
+    if deleteDenyIPAnyAny and isdenyipanyany(ruleContent):  # Delete all "deny ip any any" rules
         print(f'Rule #{rule_counter} is "deny ip any any", deleting it')
         try:
             result = requests.delete(ruleLink, headers=Headers, verify=False)
@@ -252,7 +291,7 @@ for rule in rules:
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
         ruleContent['logBegin'] = False
 
-    if findDestZones:
+    if findDestZones:  # Find destination zones for a rule if needed
         destzones = zone_find(ruleContent, zones)
         if destzones:
             json_data = list()
@@ -262,11 +301,11 @@ for rule in rules:
             ruleContent['destinationZones']['objects'] = json_data
             print(f'Rule #{rule_counter}, found {len(destzones)} destination zones')
 
-    if ruleContent == oldContent:
+    if ruleContent == oldContent:  # Maybe no need to change anything
         print(f'Rule #{rule_counter} ok, no changes needed')
         continue
 
-    try:
+    try:  # Apply changes
         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         result.raise_for_status()
     except:
