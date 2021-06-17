@@ -4,6 +4,7 @@ if __name__ == '__main__':
 
 
 from csv import reader
+from ipaddress import ip_network
 
 
 def parse_csv(file):
@@ -12,12 +13,12 @@ def parse_csv(file):
         vrf_subnets = dict()
         content = reader(inputfile, delimiter=';')
         for nextline in content:
-            print(nextline)
             vrf, subnet = nextline
             if subnet.find('/') == -1:
                 subnet = subnet + '/24'
             if not vrf_subnets.get(vrf):  # New VRF
                 vrf_subnets[vrf] = list()
-            vrf_subnets[vrf].append(subnet)
+            vrf_subnets[vrf].append(ip_network(subnet.strip()))
+        print(f'Found {len(vrf_subnets)} security zones')
     return vrf_subnets
 

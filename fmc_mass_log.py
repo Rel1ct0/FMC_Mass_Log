@@ -14,8 +14,9 @@ import json
 from pprint import pprint
 from time import time
 from VRF_Subnet_Parser import parse_csv
-from DestZone_Finder import zone_find
 from DenyIPAnyAny import isdenyipanyany
+from ipaddress import ip_network
+
 
 desiredState = {
     'logBegin': True,
@@ -52,6 +53,78 @@ def generatetoken():
     return token, domain
 
 
+def get_networks(dest: dict):
+    global FMC
+    global domainUUID
+    global Headers
+    networks_result = list()
+    if dest.get('literals'):
+        for literal in dest['literals']:
+            if literal['type'] == "Host":
+                networks_result.append(ip_network(literal['value'] + '/32'))
+            else:
+                networks_result.append(ip_network(literal['value']))
+    if dest.get('objects'):
+        for next_object in dest['objects']:
+            if next_object['type'] == 'NetworkGroup':  # Must get content of Network Group
+                try:
+                    result = requests.get(
+                        f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/object/networkgroups/{next_object["id"]}',
+                        headers=Headers, verify=False)
+                    result.raise_for_status()
+                except:
+                    if result.status_code == 401:
+                        print("Token expired, getting a new one")
+                        Headers['X-auth-access-token'], domainUUID = generatetoken()
+                        result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
+                    else:
+                        pprint(result.json())
+                        exit(1)
+                networks_result.extend(get_networks(result.json()))
+            elif next_object['type'] == 'Network':
+                try:
+                    result = requests.get(
+                        f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/object/networks/{next_object["id"]}',
+                        headers=Headers, verify=False)
+                    result.raise_for_status()
+                except:
+                    if result.status_code == 401:
+                        print("Token expired, getting a new one")
+                        Headers['X-auth-access-token'], domainUUID = generatetoken()
+                        result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
+                    else:
+                        pprint(result.json())
+                        exit(1)
+                if result.json()['type'] == 'Host':
+                    networks_result.append(ip_network(result.json()['value'] + '/32'))
+                else:
+                    networks_result.append(ip_network(result.json()['value']))
+    return networks_result
+
+
+def zone_find(rule_json, zone_dict):
+    if not rule_json.get('destinationNetworks'):
+        return None  # Destination is any
+    dest_networks = get_networks(rule_json['destinationNetworks'])
+    vrfs_found = 0
+    vrfs_set = set()
+    for net in dest_networks:
+        for zone in zone_dict.keys():
+            if zone_dict[zone].get('networks'):
+                for zone_net in zone_dict[zone]['networks']:
+                    if net.subnet_of(zone_net):
+                        vrfs_found += 1
+                        vrfs_set.add(zone)
+    if vrfs_found >= len(dest_networks):
+        result = list(vrfs_set)
+        result.sort()
+        return result
+    return None
+
+#######################################################################################################
+# Main program starts here
+#######################################################################################################
+
 if len(sys.argv) < 3:
     usage()
 
@@ -78,6 +151,7 @@ print(f"Looking for policy {Policy}...")
 result = requests.get(f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/policy/accesspolicies',
                       headers=Headers,
                       verify=False)
+result.raise_for_status()
 policies = result.json()['items']
 policyID = ''
 for policy in policies:
@@ -100,15 +174,34 @@ while result.json()['paging'].get('next'):
         result.json()['paging'].get('next')[0],
         headers=Headers,
         verify=False)
+    result.raise_for_status()
     rules.extend(result.json()['items'])
 print(f'Found {len(rules)} rules')
 
+# Get all zones if needed
+if findDestZones:
+    result = requests.get(
+        f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/object/securityzones?offset=0&limit=1000',
+        headers=Headers,
+        verify=False)
+    result.raise_for_status()
+    raw_zones = result.json()['items']
+    zones = dict()
+    for item in raw_zones:
+        zones[item['name']] = dict()
+        zones[item['name']]['json'] = item
+        zones[item['name']]['json'].pop('links')
+        if VRF_Subnets.get(item['name']):
+            zones[item['name']]['networks'] = VRF_Subnets[item['name']]
+        else:
+            print(f'Security zone {item["name"]} has no networks defined')
 
 # Main loop
 rule_counter = 0
 for rule in rules:
     rule_counter += 1
     ruleLink = rule['links']['self']
+
     try:
         result = requests.get(ruleLink, headers=Headers, verify=False)
         result.raise_for_status()
@@ -158,9 +251,21 @@ for rule in rules:
         ruleContent['logEnd'] = False
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
         ruleContent['logBegin'] = False
+
+    if findDestZones:
+        destzones = zone_find(ruleContent, zones)
+        if destzones:
+            json_data = list()
+            for next_seczone in destzones:
+                json_data.append(zones[next_seczone]['json'])
+            ruleContent['destinationZones'] = dict()
+            ruleContent['destinationZones']['objects'] = json_data
+            print(f'Rule #{rule_counter}, found {len(destzones)} destination zones')
+
     if ruleContent == oldContent:
         print(f'Rule #{rule_counter} ok, no changes needed')
         continue
+
     try:
         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         result.raise_for_status()
