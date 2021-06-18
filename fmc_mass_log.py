@@ -12,10 +12,13 @@ from getpass import getpass
 import warnings
 import json
 from pprint import pprint
-from time import time
+from time import time, sleep
 from ipaddress import ip_network
 from csv import reader
 
+
+#######################################################################################################
+# Variables block
 
 desiredState = {
     'logBegin': True,
@@ -24,12 +27,10 @@ desiredState = {
     'enableSyslog': True
 }
 
-# various variables
-Headers = {'Content-Type': 'application/json'}
-domainUUID = {}
-findDestZones = False
 changeAllowToTrust = True
 deleteDenyIPAnyAny = True
+
+#######################################################################################################
 
 
 def usage():
@@ -76,6 +77,11 @@ def get_networks(dest: dict):
                         print("Token expired, getting a new one")
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
+                    elif result.status_code == 429:
+                        print("We hit the rate limiter, waiting...")
+                        sleep(5)
+                        Headers['X-auth-access-token'], domainUUID = generatetoken()
+                        result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
                         pprint(result.json())
                         exit(1)
@@ -89,6 +95,11 @@ def get_networks(dest: dict):
                 except:
                     if result.status_code == 401:
                         print("Token expired, getting a new one")
+                        Headers['X-auth-access-token'], domainUUID = generatetoken()
+                        result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
+                    elif result.status_code == 429:
+                        print("We hit the rate limiter, waiting...")
+                        sleep(5)
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
@@ -163,6 +174,10 @@ def parse_csv(file):
 # Main program starts here
 #######################################################################################################
 
+
+Headers = {'Content-Type': 'application/json'}
+domainUUID = {}
+findDestZones = False
 
 if len(sys.argv) < 3:
     usage()
@@ -249,9 +264,13 @@ for rule in rules:
             print("Token expired, getting a new one")
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.get(ruleLink, headers=Headers, verify=False)
+        elif result.status_code == 429:
+            print("We hit the rate limiter, waiting...")
+            sleep(5)
+            Headers['X-auth-access-token'], domainUUID = generatetoken()
+            result = requests.get(ruleLink, headers=Headers, verify=False)
         else:
             pprint(f'Got error, status code is {result.status_code}')
-            pprint(result.content)
             exit(1)
     ruleContent = result.json()
 
@@ -266,6 +285,11 @@ for rule in rules:
         except:
             if result.status_code == 401:
                 print("Token expired, getting a new one")
+                Headers['X-auth-access-token'], domainUUID = generatetoken()
+                result = requests.delete(ruleLink, headers=Headers, verify=False)
+            elif result.status_code == 429:
+                print("We hit the rate limiter, waiting...")
+                sleep(5)
                 Headers['X-auth-access-token'], domainUUID = generatetoken()
                 result = requests.delete(ruleLink, headers=Headers, verify=False)
             else:
@@ -311,6 +335,11 @@ for rule in rules:
     except:
         if result.status_code == 401:
             print("Token expired, getting a new one")
+            Headers['X-auth-access-token'], domainUUID = generatetoken()
+            result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
+        elif result.status_code == 429:
+            print("We hit the rate limiter, waiting...")
+            sleep(5)
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         else:
