@@ -46,8 +46,14 @@ def generatetoken():
     try:
         result.raise_for_status()
     except:
-        pprint(result.json())
-        exit(1)
+        if result.status_code == 429:
+            sleep(10)
+            result = requests.post(f"https://{FMC}/api/fmc_platform/v1/auth/generatetoken",
+                                   auth=(adminuser, adminpass),
+                                   verify=False)
+        else:
+            pprint(result.json())
+            exit(1)
     token = result.headers['X-auth-access-token']
     domain = result.headers['DOMAIN_UUID']
     return token, domain
@@ -79,7 +85,7 @@ def get_networks(dest: dict):
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     elif result.status_code == 429:
                         print("We hit the rate limiter, waiting...")
-                        sleep(5)
+                        sleep(10)
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
@@ -99,7 +105,7 @@ def get_networks(dest: dict):
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     elif result.status_code == 429:
                         print("We hit the rate limiter, waiting...")
-                        sleep(5)
+                        sleep(10)
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
@@ -266,7 +272,7 @@ for rule in rules:
             result = requests.get(ruleLink, headers=Headers, verify=False)
         elif result.status_code == 429:
             print("We hit the rate limiter, waiting...")
-            sleep(5)
+            sleep(10)
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.get(ruleLink, headers=Headers, verify=False)
         else:
@@ -289,7 +295,7 @@ for rule in rules:
                 result = requests.delete(ruleLink, headers=Headers, verify=False)
             elif result.status_code == 429:
                 print("We hit the rate limiter, waiting...")
-                sleep(5)
+                sleep(10)
                 Headers['X-auth-access-token'], domainUUID = generatetoken()
                 result = requests.delete(ruleLink, headers=Headers, verify=False)
             else:
@@ -339,7 +345,7 @@ for rule in rules:
             result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         elif result.status_code == 429:
             print("We hit the rate limiter, waiting...")
-            sleep(5)
+            sleep(10)
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         else:
