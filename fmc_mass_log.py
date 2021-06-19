@@ -13,7 +13,7 @@ import warnings
 import json
 from pprint import pprint
 from time import time, sleep
-from ipaddress import ip_network
+from ipaddress import ip_network, ip_interface
 from csv import reader
 
 
@@ -122,23 +122,26 @@ def zone_find(rule_json, zone_dict):
     if not rule_json.get('destinationNetworks'):
         return None  # Destination is any
     dest_networks = get_networks(rule_json['destinationNetworks'])
-    vrfs_found = 0
     vrfs_set = set()
+    found_networks = list()
     for net in dest_networks:
+        not_found = True
         for zone in zone_dict.keys():
             if zone_dict[zone].get('networks'):
                 for zone_net in zone_dict[zone]['networks']:
                     try:
                         if net.subnet_of(zone_net):
-                            vrfs_found += 1
+                            if not_found:  # First Zone found for this network
+                                found_networks.append(net)
+                            not_found = False  # If we find more Zones for this network, still counts as one network
                             vrfs_set.add(zone)
                     except:
                         pass
-    if vrfs_found >= len(dest_networks):
+    if len(dest_networks) == len(found_networks):  # At least one Zone found for every network in rule
         result = list(vrfs_set)
         result.sort()
         return result
-    return None
+    return None  # At least one network in a rule does not have a Zone
 
 
 def isdenyipanyany(rule: dict)->bool:
@@ -163,15 +166,20 @@ def parse_csv(file):
         content = reader(inputfile, delimiter=';')
         for nextline in content:
             vrf, subnet = nextline
+            vrf = vrf.strip()
+            subnet = subnet.strip()
             if subnet.find('/') == -1:
                 subnet = subnet + '/24'
             if not vrf_subnets.get(vrf):  # New VRF
                 vrf_subnets[vrf] = list()
             try:
-                vrf_subnets[vrf].append(ip_network(subnet.strip()))
-            except Exception as e:
-                print(f'Error parsing {file}, got {e}')
-                print(f'{subnet} is not a valid subnet')
+                vrf_subnets[vrf].append(ip_network(subnet))
+            except:
+                try:
+                    vrf_subnets[vrf].append(ip_interface(subnet).network)
+                except:
+                    print(f'Error parsing {file}')
+                    print(f'{subnet} is not a valid subnet')
         print(f'Found {len(vrf_subnets)} security zones')
     return vrf_subnets
 
