@@ -144,11 +144,11 @@ def zone_find(rule_json, zone_dict):
     return None  # At least one network in a rule does not have a Zone
 
 
-def isdenyipanyany(rule: dict)->bool:
+def isipanyany(rule: dict) -> bool:
     try:
-        if rule['action'] == 'BLOCK' and  \
-                (not rule.get('sourceNetworks') or rule['sourceNetworks']['objects'][0]['name'] == 'any') and \
+        if (not rule.get('sourceNetworks') or rule['sourceNetworks']['objects'][0]['name'] == 'any') and \
                 (not rule.get('destinationNetworks') or rule['destinationNetworks']['objects'][0]['name'] == 'any') and \
+                not rule.get('destinationZones') and \
                 not rule.get('sourcePorts') and \
                 not rule.get('urls') and \
                 not rule.get('destinationPorts') and \
@@ -192,6 +192,7 @@ def parse_csv(file):
 Headers = {'Content-Type': 'application/json'}
 domainUUID = {}
 findDestZones = False
+permitAnyAnyRules = list()
 
 if len(sys.argv) < 3:
     usage()
@@ -291,7 +292,8 @@ for rule in rules:
     if ruleContent.get('metadata'):  # Remove metadata or PUT will fail
         ruleContent.pop('metadata')
 
-    if deleteDenyIPAnyAny and isdenyipanyany(ruleContent):  # Delete all "deny ip any any" rules
+    # Delete all "deny ip any any" rules
+    if deleteDenyIPAnyAny and ruleContent['action'] == 'BLOCK' and isipanyany(ruleContent):
         print(f'Rule #{rule_counter} is "deny ip any any", deleting it')
         try:
             result = requests.delete(ruleLink, headers=Headers, verify=False)
@@ -310,6 +312,9 @@ for rule in rules:
                 pprint(result.json())
                 exit(1)
         continue
+
+    if ruleContent['action'] in ['ALLOW', 'TRUST'] and isipanyany(ruleContent):
+        permitAnyAnyRules.append(ruleContent['name'])
 
     oldContent = ruleContent.copy()
     ruleContent.update(desiredState)
@@ -362,5 +367,9 @@ for rule in rules:
     print(f'Rule #{rule_counter} changed')
 
 print(f"Operation took {time()-startTime} seconds")
+
+if permitAnyAnyRules:
+    for rule in permitAnyAnyRules:
+        print(f'Warning, rule {rule} is "permit ip any any"')
 
 
