@@ -11,7 +11,6 @@ import sys
 from getpass import getpass
 import warnings
 import json
-from pprint import pprint
 from time import time, sleep
 from ipaddress import ip_network, ip_interface
 from csv import reader
@@ -29,17 +28,28 @@ desiredState = {
 
 changeAllowToTrust = True
 deleteDenyIPAnyAny = True
+defaultZone = ''
+logfile = 'fmc_mass_log.log'
+logfile_fd = ''
 
 #######################################################################################################
 
 
 def usage():
-    print("Usage: fmc_mass_log <FMC_address> <Policy_Name> [<VRF-Subnet.csv]")
+    print("Usage: fmc_mass_log <FMC_address> <Policy_Name> [<VRF-Subnet.csv> [<Default-Zone-Name]]")
     exit(0)
 
 
+def zprint(text):
+    global logfile_fd
+    print(text)
+    if logfile_fd:
+        logfile_fd.write(text + '\n')
+    return
+
+
 def generatetoken():
-    print("Getting access token from FMC...")
+    zprint("Getting access token from FMC...")
     result = requests.post(f"https://{FMC}/api/fmc_platform/v1/auth/generatetoken",
                            auth=(adminuser, adminpass),
                            verify=False)
@@ -52,7 +62,7 @@ def generatetoken():
                                    auth=(adminuser, adminpass),
                                    verify=False)
         else:
-            pprint(result.json())
+            zprint(result.json())
             exit(1)
     token = result.headers['X-auth-access-token']
     domain = result.headers['DOMAIN_UUID']
@@ -80,16 +90,16 @@ def get_networks(dest: dict):
                     result.raise_for_status()
                 except:
                     if result.status_code == 401:
-                        print("Token expired, getting a new one")
+                        zprint("Token expired, getting a new one")
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     elif result.status_code == 429:
-                        print("We hit the rate limiter, waiting...")
+                        zprint("We hit the rate limiter, waiting...")
                         sleep(10)
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
-                        pprint(result.json())
+                        zprint(result.json())
                         exit(1)
                 networks_result.extend(get_networks(result.json()))
             elif next_object['type'] == 'Network':
@@ -100,16 +110,16 @@ def get_networks(dest: dict):
                     result.raise_for_status()
                 except:
                     if result.status_code == 401:
-                        print("Token expired, getting a new one")
+                        zprint("Token expired, getting a new one")
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     elif result.status_code == 429:
-                        print("We hit the rate limiter, waiting...")
+                        zprint("We hit the rate limiter, waiting...")
                         sleep(10)
                         Headers['X-auth-access-token'], domainUUID = generatetoken()
                         result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
                     else:
-                        pprint(result.json())
+                        zprint(result.json())
                         exit(1)
                 if result.json()['type'] == 'Host':
                     networks_result.append(ip_network(result.json()['value'] + '/32'))
@@ -119,36 +129,40 @@ def get_networks(dest: dict):
 
 
 def zone_find(rule_json, zone_dict):
-    if not rule_json.get('destinationNetworks'):
-        return None  # Destination is any
-    dest_networks = get_networks(rule_json['destinationNetworks'])
     vrfs_set = set()
     found_networks = list()
-    for net in dest_networks:
-        not_found = True
-        for zone in zone_dict.keys():
-            if zone_dict[zone].get('networks'):
-                for zone_net in zone_dict[zone]['networks']:
-                    try:
-                        if net.subnet_of(zone_net):
-                            if not_found:  # First Zone found for this network
-                                found_networks.append(net)
-                            not_found = False  # If we find more Zones for this network, still counts as one network
-                            vrfs_set.add(zone)
-                    except:
-                        pass
+    dest_networks = ['dummy_data']
+    if rule_json.get('destinationNetworks'):
+        dest_networks = get_networks(rule_json['destinationNetworks'])
+        for net in dest_networks:
+            not_found = True
+            for zone in zone_dict.keys():
+                if zone_dict[zone].get('networks'):
+                    for zone_net in zone_dict[zone]['networks']:
+                        try:
+                            if net.subnet_of(zone_net):
+                                if not_found:  # First Zone found for this network
+                                    found_networks.append(net)
+                                not_found = False  # If we find more Zones for this network, still counts as one network
+                                vrfs_set.add(zone)
+                        except:
+                            pass
     if len(dest_networks) == len(found_networks):  # At least one Zone found for every network in rule
         result = list(vrfs_set)
         result.sort()
         return result
-    return None  # At least one network in a rule does not have a Zone
+    elif defaultZone:  # Some networks not identified, assuming they belong to default Zone
+        vrfs_set.add(defaultZone)
+        result = list(vrfs_set)
+        result.sort()
+        return result
+    return None  # At least one network in a rule does not have a Zone, and no default Zone specified
 
 
 def isipanyany(rule: dict) -> bool:
     try:
         if (not rule.get('sourceNetworks') or rule['sourceNetworks']['objects'][0]['name'] == 'any') and \
                 (not rule.get('destinationNetworks') or rule['destinationNetworks']['objects'][0]['name'] == 'any') and \
-                not rule.get('destinationZones') and \
                 not rule.get('sourcePorts') and \
                 not rule.get('urls') and \
                 not rule.get('destinationPorts') and \
@@ -161,7 +175,7 @@ def isipanyany(rule: dict) -> bool:
 
 def parse_csv(file):
     with open(file, encoding="utf-8-sig") as inputfile:
-        print(f'Parsing inputfile {file}')
+        zprint(f'Parsing inputfile {file}')
         vrf_subnets = dict()
         content = reader(inputfile, delimiter=';')
         for nextline in content:
@@ -178,9 +192,9 @@ def parse_csv(file):
                 try:
                     vrf_subnets[vrf].append(ip_interface(subnet).network)
                 except:
-                    print(f'Error parsing {file}')
-                    print(f'{subnet} is not a valid subnet')
-        print(f'Found {len(vrf_subnets)} security zones')
+                    zprint(f'Error parsing {file}')
+                    zprint(f'{subnet} is not a valid subnet')
+        zprint(f'Found {len(vrf_subnets)} security zones')
     return vrf_subnets
 
 
@@ -201,9 +215,14 @@ warnings.filterwarnings("ignore")
 FMC = sys.argv[1]
 Policy = sys.argv[2]
 
-if len(sys.argv) == 4:
+if len(sys.argv) > 3:
     VRF_Subnets = parse_csv(sys.argv[3])
     findDestZones = True
+    if len(sys.argv) == 5:
+        defaultZone = sys.argv[4]
+
+if logfile:
+    logfile_fd = open(logfile, 'w')
 
 adminuser = input("Please enter admin username: ")
 print("Please enter admin password: ", sep='')
@@ -216,7 +235,7 @@ Headers['X-auth-access-token'], domainUUID = generatetoken()
 
 
 # Find policy to work with
-print(f"Looking for policy {Policy}...")
+zprint(f"Looking for policy {Policy}...")
 result = requests.get(f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/policy/accesspolicies',
                       headers=Headers,
                       verify=False)
@@ -227,9 +246,9 @@ for policy in policies:
     if policy['name'] == Policy:
         policyID = policy['id']
 if not policyID:
-    print(f"Policy with name {Policy} not found")
+    zprint(f"Policy with name {Policy} not found")
     exit(0)
-print(f"Policy with name {Policy} found, id is {policyID}")
+zprint(f"Policy with name {Policy} found, id is {policyID}")
 
 
 # Get all rules from the policy
@@ -245,7 +264,7 @@ while result.json()['paging'].get('next'):
         verify=False)
     result.raise_for_status()
     rules.extend(result.json()['items'])
-print(f'Found {len(rules)} rules')
+zprint(f'Found {len(rules)} rules')
 
 # Get all zones if needed
 if findDestZones:
@@ -263,7 +282,7 @@ if findDestZones:
         if VRF_Subnets.get(item['name']):
             zones[item['name']]['networks'] = VRF_Subnets[item['name']]
         else:
-            print(f'Security zone {item["name"]} has no networks defined')
+            zprint(f'Security zone {item["name"]} has no networks defined')
 
 # Main loop
 rule_counter = 0
@@ -276,16 +295,16 @@ for rule in rules:
         result.raise_for_status()
     except:
         if result.status_code == 401:
-            print("Token expired, getting a new one")
+            zprint("Token expired, getting a new one")
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.get(ruleLink, headers=Headers, verify=False)
         elif result.status_code == 429:
-            print("We hit the rate limiter, waiting...")
+            zprint("We hit the rate limiter, waiting...")
             sleep(10)
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.get(ruleLink, headers=Headers, verify=False)
         else:
-            pprint(f'Got error, status code is {result.status_code}')
+            zprint(f'Got error, status code is {result.status_code}')
             exit(1)
     ruleContent = result.json()
 
@@ -294,22 +313,22 @@ for rule in rules:
 
     # Delete all "deny ip any any" rules
     if deleteDenyIPAnyAny and ruleContent['action'] == 'BLOCK' and isipanyany(ruleContent):
-        print(f'Rule #{rule_counter} is "deny ip any any", deleting it')
+        zprint(f'Rule #{rule_counter} is "deny ip any any", deleting it')
         try:
             result = requests.delete(ruleLink, headers=Headers, verify=False)
             result.raise_for_status()
         except:
             if result.status_code == 401:
-                print("Token expired, getting a new one")
+                zprint("Token expired, getting a new one")
                 Headers['X-auth-access-token'], domainUUID = generatetoken()
                 result = requests.delete(ruleLink, headers=Headers, verify=False)
             elif result.status_code == 429:
-                print("We hit the rate limiter, waiting...")
+                zprint("We hit the rate limiter, waiting...")
                 sleep(10)
                 Headers['X-auth-access-token'], domainUUID = generatetoken()
                 result = requests.delete(ruleLink, headers=Headers, verify=False)
             else:
-                pprint(result.json())
+                zprint(result.json())
                 exit(1)
         continue
 
@@ -342,10 +361,10 @@ for rule in rules:
                 json_data.append(zones[next_seczone]['json'])
             ruleContent['destinationZones'] = dict()
             ruleContent['destinationZones']['objects'] = json_data
-            print(f'Rule #{rule_counter}, found {len(destzones)} destination zones')
+            zprint(f'Rule #{rule_counter}, found {len(destzones)} destination zones')
 
     if ruleContent == oldContent:  # Maybe no need to change anything
-        print(f'Rule #{rule_counter} ok, no changes needed')
+        zprint(f'Rule #{rule_counter} ok, no changes needed')
         continue
 
     try:  # Apply changes
@@ -353,23 +372,24 @@ for rule in rules:
         result.raise_for_status()
     except:
         if result.status_code == 401:
-            print("Token expired, getting a new one")
+            zprint("Token expired, getting a new one")
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         elif result.status_code == 429:
-            print("We hit the rate limiter, waiting...")
+            zprint("We hit the rate limiter, waiting...")
             sleep(10)
             Headers['X-auth-access-token'], domainUUID = generatetoken()
             result = requests.put(ruleLink, headers=Headers, verify=False, data=json.dumps(ruleContent))
         else:
-            pprint(result.json())
+            zprint(result.json())
             exit(1)
-    print(f'Rule #{rule_counter} changed')
+    zprint(f'Rule #{rule_counter} changed')
 
-print(f"Operation took {time()-startTime} seconds")
+zprint(f"Operation took {time()-startTime} seconds")
 
 if permitAnyAnyRules:
     for rule in permitAnyAnyRules:
-        print(f'Warning, rule {rule} is "permit ip any any"')
+        zprint(f'Warning, rule {rule} is "permit ip any any"')
 
-
+if logfile_fd:
+    logfile_fd.close()
