@@ -2,19 +2,26 @@
 
 Script to find all rules in the Access Control Policy and mass change them
 
-See "desiredState" variable inside, settings are self-explanatory
+See _desiredState_ variable inside, settings are self-explanatory
 
-You can also specify CSV-file with "SecurityZone;Subnet" columns, script will try to find and set destination zones in the rules
+You can also specify CSV-file with `"SecurityZone;Subnet"` columns, script will try to find and set destination zones in the rules
 
-Script will also delete 'deny ip any any' rules by default and warn about 'permit ip any any' rules
+If _[Default-Zone-Name]_ is specified, script will assume that every network missing in CSV-file belongs to that zone.
 
-Screen output will be logged into 'fmc_mass_log.log' text file
+Also, it will check all the rules where _[Default-Zone-Name]_ is the only SrcZone and try to find and set source zone(s).
+
+Script will  delete _'deny ip any any'_ rules by default (variable _deleteDenyIPAnyAny_)
+
+Script will warn about _'permit ip any any'_ rules, but will not delete them
+
+Script will change all _'ALLOW'_ rules to _'TRUST'_ (variable _changeAllowToTrust_)
+
+Screen output will be logged into _'fmc_mass_log.log'_ text file
 
 ## Usage
 
 fmc_mass_log <FMC_address> <Policy_Name> [<VRF-Subnet.csv> [Default-Zone-Name]]
 
-If Default-Zone-Name is specified, script will assume that every network missing in CSV belongs to default zone.
 
 ### Example of suitable CSV content
 
