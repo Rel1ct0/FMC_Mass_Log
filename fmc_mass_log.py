@@ -159,6 +159,37 @@ def zone_find(rule_json, zone_dict):
     return None  # At least one network in a rule does not have a Zone, and no default Zone specified
 
 
+def zone_find_src(rule_json, zone_dict):
+    vrfs_set = set()
+    found_networks = list()
+    src_networks = ['dummy_data']
+    if rule_json.get('sourceNetworks'):
+        src_networks = get_networks(rule_json['sourceNetworks'])
+        for net in src_networks:
+            not_found = True
+            for zone in zone_dict.keys():
+                if zone_dict[zone].get('networks'):
+                    for zone_net in zone_dict[zone]['networks']:
+                        try:
+                            if net.subnet_of(zone_net):
+                                if not_found:  # First Zone found for this network
+                                    found_networks.append(net)
+                                not_found = False  # If we find more Zones for this network, still counts as one network
+                                vrfs_set.add(zone)
+                        except:
+                            pass
+    if len(src_networks) == len(found_networks):  # At least one Zone found for every network in rule
+        result = list(vrfs_set)
+        result.sort()
+        return result
+    elif defaultZone:  # Some networks not identified, assuming they belong to default Zone
+        vrfs_set.add(defaultZone)
+        result = list(vrfs_set)
+        result.sort()
+        return result
+    return None  # At least one network in a rule does not have a Zone, and no default Zone specified
+
+
 def isipanyany(rule: dict) -> bool:
     try:
         if (not rule.get('sourceNetworks') or rule['sourceNetworks']['objects'][0]['name'] == 'any') and \
@@ -186,12 +217,12 @@ def parse_csv(file):
                 subnet = subnet + '/24'
             if not vrf_subnets.get(vrf):  # New VRF
                 vrf_subnets[vrf] = list()
-            try:
+            try:  # Is that a network address?
                 vrf_subnets[vrf].append(ip_network(subnet))
             except:
-                try:
+                try:  # Not a network address. Maybe an interface address?
                     vrf_subnets[vrf].append(ip_interface(subnet).network)
-                except:
+                except:  # Not an interface address. Skipping.
                     zprint(f'Error parsing {file}')
                     zprint(f'{subnet} is not a valid subnet')
         zprint(f'Found {len(vrf_subnets)} security zones')
@@ -205,7 +236,7 @@ def parse_csv(file):
 
 Headers = {'Content-Type': 'application/json'}
 domainUUID = {}
-findDestZones = False
+Zone_CSV_Present = False
 permitAnyAnyRules = list()
 
 if len(sys.argv) < 3:
@@ -217,7 +248,7 @@ Policy = sys.argv[2]
 
 if len(sys.argv) > 3:
     VRF_Subnets = parse_csv(sys.argv[3])
-    findDestZones = True
+    Zone_CSV_Present = True
     if len(sys.argv) == 5:
         defaultZone = sys.argv[4]
 
@@ -267,7 +298,7 @@ while result.json()['paging'].get('next'):
 zprint(f'Found {len(rules)} rules')
 
 # Get all zones if needed
-if findDestZones:
+if Zone_CSV_Present:
     result = requests.get(
         f'https://{FMC}/api/fmc_config/v1/domain/{domainUUID}/object/securityzones?offset=0&limit=1000',
         headers=Headers,
@@ -353,7 +384,7 @@ for rule in rules:
     if ruleContent['action'] == 'MONITOR' and ruleContent.get('logBegin'):
         ruleContent['logBegin'] = False
 
-    if findDestZones:  # Find destination zones for a rule if needed
+    if Zone_CSV_Present:  # Find destination zones for a rule if needed
         destzones = zone_find(ruleContent, zones)
         if destzones:
             json_data = list()
@@ -363,8 +394,22 @@ for rule in rules:
             ruleContent['destinationZones']['objects'] = json_data
             zprint(f'Rule #{rule_counter}, found {len(destzones)} destination zones')
 
+    if Zone_CSV_Present and \
+        defaultZone and \
+            ruleContent.get('sourceZones') and \
+            ruleContent['sourceZones']['objects'][0]['name'] == defaultZone and \
+            len(ruleContent['sourceZones']['objects']) == 1:  # Find source zones for a rule if needed
+        srczones = zone_find_src(ruleContent, zones)
+        if srczones:
+            json_data = list()
+            for next_seczone in srczones:
+                json_data.append(zones[next_seczone]['json'])
+            ruleContent['sourceZones'] = dict()
+            ruleContent['sourceZones']['objects'] = json_data
+            zprint(f'Rule #{rule_counter}, found {len(srczones)} source zones')
+
     if ruleContent == oldContent:  # Maybe no need to change anything
-        zprint(f'Rule #{rule_counter} ok, no changes needed')
+        zprint(f'Rule #{rule_counter} ({ruleContent["name"]}) ok, no changes needed')
         continue
 
     try:  # Apply changes
@@ -383,7 +428,7 @@ for rule in rules:
         else:
             zprint(result.json())
             exit(1)
-    zprint(f'Rule #{rule_counter} changed')
+    zprint(f'Rule #{rule_counter} ({ruleContent["name"]}) changed')
 
 zprint(f"Operation took {time()-startTime} seconds")
 
